@@ -34,9 +34,9 @@ func main() {
 
 	// Run your program here
 	// _, err = parseWithScan("data.txt")
-	_, err = parseWithBuffer("data.txt")
+	_, err = parseWithBuffer("data/data.txt")
 	if err != nil {
-		fmt.Println("Can't read file ATM!")
+		fmt.Println("Can't read file ATM!", err)
 	}
 
 	fmt.Println("Done!")
@@ -138,8 +138,6 @@ Outer:
 		n, eof := f.Read(buf)
 		r := bytes.NewReader(buf[:n])
 		scanner := bufio.NewScanner(r)
-		// name := ""
-		// temp := ""
 
 		for scanner.Scan() {
 			ln := scanner.Bytes()
@@ -159,12 +157,12 @@ Outer:
 			h.Reset()
 			h.Write(name)
 			id := h.Sum32()
-			st := stations[id]
-			if len(st) == 0 {
-				st = make([]float64, 0, 1000)
+			ftemp, err := strconv.ParseFloat(string(temp), 64)
+			if err != nil {
+				fmt.Println("Error", err)
 			}
-			st = append(st, absByte(temp))
-			stations[id] = st
+
+			stations[id] = append(stations[id], ftemp)
 
 			counter++
 			if counter > 100_000_000 {
