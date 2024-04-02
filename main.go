@@ -42,63 +42,6 @@ func main() {
 	fmt.Println("Done!")
 }
 
-func fileLen(filename string) (int, error) {
-	f, err := os.Open(filename)
-	if err != nil {
-		return 0, err
-	}
-	defer f.Close()
-
-	// lines := [][]byte{}
-	buf := make([]byte, 1024)
-	size := 0
-	counter := 0
-
-	for {
-		n, err := f.Read(buf)
-		// os.Stdout.Write(buf[:n]) // <- Write file contents to stdout
-		// lines = bytes.Split(buf[:n], []byte("\n"))
-		counter += len(bytes.Split(buf[:n], []byte("\n")))
-		size += n
-
-		if err != nil {
-			if err != io.EOF {
-				log.Fatal(err)
-			}
-			break
-		}
-	}
-
-	fmt.Println("Lines by Read", counter)
-	fmt.Println("Size by Read", size)
-
-	fi, err := os.Stat(filename)
-	if err != nil {
-		return 0, err
-	}
-
-	fmt.Println("Stats", fi.Name(), fi.Size(), fi.Mode(), fi.ModTime())
-
-	return size, nil
-}
-
-func StrToF() {
-	s1 := "1.2"
-	v1, err := strconv.ParseFloat(s1, 64)
-	if err != nil {
-		fmt.Println("Error", err)
-	}
-
-	s2 := "4.0"
-	v2, err := strconv.ParseFloat(s2, 64)
-	if err != nil {
-		fmt.Println("Error", err)
-	}
-
-	fmt.Println("1.2 to int", v1)
-	fmt.Println("4.0 to int", v2)
-}
-
 func calcTemps(temps []float64) (avg, min, max float64) {
 	min = temps[0]
 	max = temps[0]
@@ -125,10 +68,10 @@ func parseWithBuffer(filename string) (int, error) {
 	defer f.Close()
 
 	var (
-		buf      = make([]byte, 5*1024*1024)
+		buf      = make([]byte, 4*1024*1024)
 		counter  = 0
-		stations = make(map[uint32][]float64)
-		reminder = make([]byte, 1024, 1024*10)
+		stations = make(map[uint32][]int)
+		reminder = make([]byte, 0, 1024*10)
 	)
 
 	h := fnv.New32a()
@@ -136,33 +79,46 @@ func parseWithBuffer(filename string) (int, error) {
 Outer:
 	for {
 		n, eof := f.Read(buf)
-		r := bytes.NewReader(buf[:n])
+		// fmt.Println("Read", n, "bytes")
+
+		startAt, endAt := getBufIndexes(buf, n)
+
+		r := bytes.NewReader(buf[startAt:endAt])
 		scanner := bufio.NewScanner(r)
+
+		for k := 0; k < startAt-1; k++ {
+			reminder = append(reminder, buf[k])
+		}
+
+		for k := endAt; k < n; k++ {
+			reminder = append(reminder, buf[k])
+		}
 
 		for scanner.Scan() {
 			ln := scanner.Bytes()
 			idx := indexOf(ln)
 
 			if idx == -1 {
-				reminder = concatBytes(reminder, ln)
+				fmt.Println("Errr line ->", string(ln))
 				continue
 			}
 
 			name := ln[:idx]
 			temp := ln[idx+1:]
 			if len(name) == 0 || len(temp) == 0 {
+				fmt.Println("Error", "name or temp len 0!")
 				reminder = concatBytes(reminder, ln)
 				continue
 			}
 			h.Reset()
 			h.Write(name)
 			id := h.Sum32()
-			ftemp, err := strconv.ParseFloat(string(temp), 64)
-			if err != nil {
-				fmt.Println("Error", err)
-			}
+			// ftemp, err := strconv.ParseFloat(string(temp), 64)
+			// if err != nil {
+			// 	fmt.Println("Error", err)
+			// }
 
-			stations[id] = append(stations[id], ftemp)
+			stations[id] = append(stations[id], atof(temp))
 
 			counter++
 			if counter > 100_000_000 {
@@ -237,23 +193,26 @@ func indexOf(ln []byte) int {
 	return idx
 }
 
-func absByte(temp []byte) float64 {
-	res := make([]byte, 0, len(temp))
-	for i := 0; i < len(temp); i++ {
-		if temp[i] == 46 {
+func atof(bArray []byte) int {
+	neg := false
+	res := 0
+	for i := 0; i < len(bArray); i++ {
+		if bArray[i] == 45 {
+			neg = true
 			continue
 		}
-		res = append(res, temp[i])
+
+		if bArray[i] == 46 {
+			continue
+		}
+		res = res*10 + int(bArray[i]-48)
 	}
 
-	// data := binary.BigEndian.Uint64(res)
-	tempi, err := strconv.Atoi(string(res))
-	// fmt.Println("Data", data, "tempi", tempi)
-	if err != nil {
-		fmt.Println("Error", err)
+	if neg {
+		return -res
 	}
 
-	return float64(tempi / 10)
+	return res
 }
 
 func concatBytes(a, b []byte) []byte {
@@ -275,4 +234,25 @@ func testStruct() {
 
 	st.avg = 2.3
 	fmt.Println("Station", st)
+}
+
+func getBufIndexes(buf []byte, n int) (int, int) {
+	startAt := 0
+	for startAt < n {
+		if buf[startAt] == 10 {
+			// fmt.Println("Found new line at begining ->", startAt)
+			break
+		}
+		startAt++
+	}
+
+	endAt := n - 1
+	for endAt > 0 {
+		if buf[endAt] == 10 {
+			// fmt.Println("Found new line at end", endAt)
+			break
+		}
+		endAt--
+	}
+	return startAt + 1, endAt
 }
