@@ -127,7 +127,7 @@ func chunkWorker(jobs <-chan []byte, results chan<- map[uint32]*Station, wg *syn
 func workOnChunk(buf []byte) map[uint32]*Station {
 	var (
 		h        = fnv.New32a()
-		nameBuf  = make([]byte, 100)
+		nameBuf  = make([]byte, 64)
 		tempBuf  = make([]byte, 10)
 		stations = make(map[uint32]*Station)
 		cursor   = 0
@@ -229,4 +229,12 @@ func atof(bArray []byte) int {
 	}
 
 	return res
+}
+
+func hash(name []byte) uint64 {
+	var h uint64 = 5381
+	for _, b := range name {
+		h = (h << 5) + h + uint64(b)
+	}
+	return h
 }
