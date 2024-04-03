@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"runtime/pprof"
 	"sync"
 )
 
@@ -21,16 +20,16 @@ type Station struct {
 var WorkerPool = 16
 
 func main() {
-	// Start profiling
-	f, err := os.Create("cpu1brc.prof")
-	if err != nil {
-		log.Fatal("could not create CPU profile: ", err)
-	}
-	defer pprof.StopCPUProfile()
-
-	if err := pprof.StartCPUProfile(f); err != nil {
-		log.Fatal("could not create CPU profile: ", err)
-	}
+	// // Start profiling
+	// f, err := os.Create("cpu1brc.prof")
+	// if err != nil {
+	// 	log.Fatal("could not create CPU profile: ", err)
+	// }
+	// defer pprof.StopCPUProfile()
+	//
+	// if err := pprof.StartCPUProfile(f); err != nil {
+	// 	log.Fatal("could not create CPU profile: ", err)
+	// }
 
 	var wg sync.WaitGroup
 	doneChan := make(chan bool)
@@ -71,8 +70,8 @@ func main() {
 			break
 		}
 
-		if err != nil {
-			log.Fatal(err)
+		if eof != nil {
+			log.Fatal(eof)
 		}
 
 		k := 0
@@ -127,8 +126,8 @@ func chunkWorker(jobs <-chan []byte, results chan<- map[uint32]*Station, wg *syn
 func workOnChunk(buf []byte) map[uint32]*Station {
 	var (
 		h        = fnv.New32a()
-		nameBuf  = make([]byte, 64)
-		tempBuf  = make([]byte, 10)
+		nameBuf  = make([]byte, 32)
+		tempBuf  = make([]byte, 6)
 		stations = make(map[uint32]*Station)
 		cursor   = 0
 	)
