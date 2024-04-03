@@ -9,7 +9,7 @@ import (
 	"log"
 	"os"
 	"runtime/pprof"
-	"strconv"
+	"sync"
 )
 
 type Station struct {
@@ -19,6 +19,8 @@ type Station struct {
 	avg   float64
 	max   float64
 }
+
+var WorkerPool = 16
 
 func main() {
 	// Start profiling
@@ -32,14 +34,116 @@ func main() {
 		log.Fatal("could not create CPU profile: ", err)
 	}
 
-	// Run your program here
-	// _, err = parseWithScan("data.txt")
-	_, err = parseWithBuffer("data/data.txt")
-	if err != nil {
-		fmt.Println("Can't read file ATM!", err)
+	var wg sync.WaitGroup
+	doneChan := make(chan bool)
+
+	f, ferr := os.Open("data/data.txt")
+	if ferr != nil {
+		fmt.Println("Can't read file ATM!", ferr)
+		return
+	}
+	defer f.Close()
+
+	jobs := make(chan []byte, WorkerPool)
+	results := make(chan map[uint32][]int, WorkerPool)
+
+	wg.Add(WorkerPool)
+	for w := 0; w < WorkerPool; w++ {
+		go chunkWorker(jobs, results, &wg)
 	}
 
-	fmt.Println("Done!")
+	allStations := make([]map[uint32][]int, 0, 1000)
+	go func() {
+		for result := range results {
+			allStations = append(allStations, result)
+		}
+
+		doneChan <- true
+	}()
+
+	var (
+		buf          = make([]byte, 4*1024*1024)
+		leftover     = make([]byte, 1024)
+		leftoverSize = 0
+		chunkCount   = 0
+	)
+	for {
+		n, eof := f.Read(buf)
+		if eof == io.EOF {
+			break
+		}
+
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		k := 0
+		for i := n - 1; i >= 0; i-- {
+			if buf[i] == 10 {
+				k = i
+				break
+			}
+		}
+
+		chunk := make([]byte, k+leftoverSize)
+		copy(chunk, leftover[:leftoverSize])
+		copy(chunk[leftoverSize:], buf[:k])
+		copy(leftover, buf[k+1:n])
+		// fmt.Println("initial -->", string(chunk[:20]))
+		// fmt.Println("leftover -->", string(buf[k+1:n]))
+		leftoverSize = n - k - 1
+
+		jobs <- chunk // send work to chunkWorker
+
+		chunkCount++
+		// if chunkCount == 5 {
+		// 	break
+		// }
+	}
+	close(jobs)
+
+	wg.Wait()
+	close(results)
+
+	<-doneChan
+	fmt.Println("Chunk count", chunkCount)
+	fmt.Println("All Work Done!")
+
+	// fmt.Println("Reminder", string(leftover))
+	// os.Stdout.Write(buf[:n])
+	// var avg, min, max float64
+	// for k, v := range stations {
+	// 	avg, min, max = calcTemps(v.temps)
+	// 	fmt.Printf("%v:%.1f/%.1f/%.1f\n", k, min, avg, max)
+	// }
+}
+
+func chunkWorker(jobs <-chan []byte, results chan<- map[uint32][]int, wg *sync.WaitGroup) {
+	defer wg.Done()
+
+	for chunk := range jobs {
+		results <- workOnChunk(chunk)
+	}
+}
+
+func workOnChunk(buf []byte) map[uint32][]int {
+	r := bytes.NewReader(buf)
+	scanner := bufio.NewScanner(r)
+	stations := make(map[uint32][]int)
+	nameBuf := make([]byte, 50)
+	tempBuf := make([]byte, 100)
+
+	h := fnv.New32a()
+	for scanner.Scan() {
+		ln := scanner.Bytes()
+		nameLen, tempLen := parseLine(ln, nameBuf, tempBuf)
+		h.Reset()
+		h.Write(nameBuf[:nameLen])
+		id := h.Sum32()
+		stations[id] = append(stations[id], atof(tempBuf[:tempLen]))
+	}
+
+	return stations
 }
 
 func calcTemps(temps []float64) (avg, min, max float64) {
@@ -60,137 +164,25 @@ func calcTemps(temps []float64) (avg, min, max float64) {
 	return sum / float64(len(temps)), min, max
 }
 
-func parseWithBuffer(filename string) (int, error) {
-	f, ferr := os.Open(filename)
-	if ferr != nil {
-		return 0, ferr
-	}
-	defer f.Close()
-
-	var (
-		buf      = make([]byte, 4*1024*1024)
-		counter  = 0
-		stations = make(map[uint32][]int)
-		reminder = make([]byte, 0, 1024*10)
-	)
-
-	h := fnv.New32a()
-
-Outer:
-	for {
-		n, eof := f.Read(buf)
-		// fmt.Println("Read", n, "bytes")
-
-		startAt, endAt := getBufIndexes(buf, n)
-
-		r := bytes.NewReader(buf[startAt:endAt])
-		scanner := bufio.NewScanner(r)
-
-		for k := 0; k < startAt-1; k++ {
-			reminder = append(reminder, buf[k])
-		}
-
-		for k := endAt; k < n; k++ {
-			reminder = append(reminder, buf[k])
-		}
-
-		for scanner.Scan() {
-			ln := scanner.Bytes()
-			idx := indexOf(ln)
-
-			if idx == -1 {
-				fmt.Println("Errr line ->", string(ln))
-				continue
-			}
-
-			name := ln[:idx]
-			temp := ln[idx+1:]
-			if len(name) == 0 || len(temp) == 0 {
-				fmt.Println("Error", "name or temp len 0!")
-				reminder = concatBytes(reminder, ln)
-				continue
-			}
-			h.Reset()
-			h.Write(name)
-			id := h.Sum32()
-			// ftemp, err := strconv.ParseFloat(string(temp), 64)
-			// if err != nil {
-			// 	fmt.Println("Error", err)
-			// }
-
-			stations[id] = append(stations[id], atof(temp))
-
-			counter++
-			if counter > 100_000_000 {
-				break Outer
-			}
-		}
-
-		if eof != nil {
-			if eof != io.EOF {
-				log.Fatal(eof)
-			}
-			break Outer
-		}
-	}
-
-	// fmt.Println("Reminder", string(reminder))
-
-	// os.Stdout.Write(buf[:n])
-	// var avg, min, max float64
-	// for k, v := range stations {
-	// 	avg, min, max = calcTemps(v.temps)
-	// 	fmt.Printf("%v:%.1f/%.1f/%.1f\n", k, min, avg, max)
-	// }
-
-	return counter, nil
-}
-
-func parseChunkWithScan(buf []byte, stations *map[uint32]Station, outCounter uint) (uint, []byte) {
-	sts := *stations
-	r := bytes.NewReader(buf)
-	scanner := bufio.NewScanner(r)
-	h := fnv.New32a()
-	counter := outCounter
-
-	for scanner.Scan() {
-		ln := scanner.Bytes()
-
-		idx := indexOf(ln)
-
-		if idx == -1 {
-			return counter, ln
-		}
-
-		h.Write(ln[:idx])
-
-		tempF, err := strconv.ParseFloat(string(ln[idx+1:]), 64)
-		if err != nil {
-			fmt.Println("Error", err)
-		}
-
-		counter++
-		station := sts[h.Sum32()]
-		station.temps = append(sts[h.Sum32()].temps, tempF)
-		sts[h.Sum32()] = station
-	}
-
-	return counter, nil
-}
-
-func indexOf(ln []byte) int {
-	idx := -1
+func parseLine(ln []byte, nameBuf []byte, tempBuf []byte) (int, int) {
+	// idx := -1
 	i := 0
-
-	for i < len(ln) && ln[i] != 59 {
+	ns := 0
+	for ln[i] != 59 {
+		nameBuf[i] = ln[i]
 		i++
+		ns++
 	}
 
-	if i < len(ln) {
-		idx = i
+	i++
+	ts := 0
+	for i < len(ln) && ln[i] != 10 {
+		tempBuf[ts] = ln[i]
+		i++
+		ts++
 	}
 
-	return idx
+	return ns, ts
 }
 
 func atof(bArray []byte) int {
@@ -213,46 +205,4 @@ func atof(bArray []byte) int {
 	}
 
 	return res
-}
-
-func concatBytes(a, b []byte) []byte {
-	c := make([]byte, len(a)+len(b))
-	copy(c, a)
-	copy(c[len(a):], b)
-	return c
-}
-
-func testStruct() {
-	st := Station{
-		name: "Test",
-		temps: []float64{
-			1.2,
-			2.3,
-			3.4,
-		},
-	}
-
-	st.avg = 2.3
-	fmt.Println("Station", st)
-}
-
-func getBufIndexes(buf []byte, n int) (int, int) {
-	startAt := 0
-	for startAt < n {
-		if buf[startAt] == 10 {
-			// fmt.Println("Found new line at begining ->", startAt)
-			break
-		}
-		startAt++
-	}
-
-	endAt := n - 1
-	for endAt > 0 {
-		if buf[endAt] == 10 {
-			// fmt.Println("Found new line at end", endAt)
-			break
-		}
-		endAt--
-	}
-	return startAt + 1, endAt
 }
