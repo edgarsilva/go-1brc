@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
 	"hash/fnv"
 	"io"
@@ -13,11 +11,11 @@ import (
 )
 
 type Station struct {
-	name  string
-	temps []float64
-	min   float64
-	avg   float64
-	max   float64
+	Name  []byte
+	Sum   int
+	Min   int
+	Max   int
+	Count int
 }
 
 var WorkerPool = 16
@@ -45,14 +43,14 @@ func main() {
 	defer f.Close()
 
 	jobs := make(chan []byte, WorkerPool)
-	results := make(chan map[uint32][]int, WorkerPool)
+	results := make(chan map[uint32]*Station, WorkerPool)
 
 	wg.Add(WorkerPool)
 	for w := 0; w < WorkerPool; w++ {
 		go chunkWorker(jobs, results, &wg)
 	}
 
-	allStations := make([]map[uint32][]int, 0, 1000)
+	allStations := make([]map[uint32]*Station, 0, 1000)
 	go func() {
 		for result := range results {
 			allStations = append(allStations, result)
@@ -118,7 +116,7 @@ func main() {
 	// }
 }
 
-func chunkWorker(jobs <-chan []byte, results chan<- map[uint32][]int, wg *sync.WaitGroup) {
+func chunkWorker(jobs <-chan []byte, results chan<- map[uint32]*Station, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	for chunk := range jobs {
@@ -126,24 +124,71 @@ func chunkWorker(jobs <-chan []byte, results chan<- map[uint32][]int, wg *sync.W
 	}
 }
 
-func workOnChunk(buf []byte) map[uint32][]int {
-	r := bytes.NewReader(buf)
-	scanner := bufio.NewScanner(r)
-	stations := make(map[uint32][]int)
-	nameBuf := make([]byte, 50)
-	tempBuf := make([]byte, 100)
+func workOnChunk(buf []byte) map[uint32]*Station {
+	var (
+		h        = fnv.New32a()
+		nameBuf  = make([]byte, 100)
+		tempBuf  = make([]byte, 10)
+		stations = make(map[uint32]*Station)
+		cursor   = 0
+	)
 
-	h := fnv.New32a()
-	for scanner.Scan() {
-		ln := scanner.Bytes()
-		nameLen, tempLen := parseLine(ln, nameBuf, tempBuf)
+	for cursor < len(buf) {
+		nxCursor, ns, ts := parseLine(cursor, buf, nameBuf, tempBuf)
+		cursor = nxCursor
+		// i := 0
+		// for ln[i] != 59 {
+		// 	i++
+		// }
+		name := nameBuf[:ns]
+		temp := atof(tempBuf[:ts])
+
 		h.Reset()
-		h.Write(nameBuf[:nameLen])
+		h.Write(nameBuf[:ns])
 		id := h.Sum32()
-		stations[id] = append(stations[id], atof(tempBuf[:tempLen]))
+		station, ok := stations[id]
+		if !ok {
+			stations[id] = &Station{
+				Name:  name,
+				Min:   temp,
+				Max:   temp,
+				Count: 1,
+				Sum:   temp,
+			}
+		} else {
+			if temp < station.Min {
+				station.Min = temp
+			}
+			if temp > station.Max {
+				station.Max = temp
+			}
+			station.Sum += temp
+			station.Count++
+		}
 	}
 
 	return stations
+}
+
+func parseLine(cursor int, buf, nbuf, tbuf []byte) (int, int, int) {
+	i := cursor
+	ns := 0
+	for buf[i] != 59 {
+		nbuf[ns] = buf[i]
+		i++
+		ns++
+	}
+
+	i++ // skip semicolon
+	ts := 0
+	for i < len(buf) && buf[i] != 10 {
+		tbuf[ts] = buf[i]
+		i++
+		ts++
+	}
+
+	i++
+	return i, ns, ts
 }
 
 func calcTemps(temps []float64) (avg, min, max float64) {
@@ -162,27 +207,6 @@ func calcTemps(temps []float64) (avg, min, max float64) {
 	}
 
 	return sum / float64(len(temps)), min, max
-}
-
-func parseLine(ln []byte, nameBuf []byte, tempBuf []byte) (int, int) {
-	// idx := -1
-	i := 0
-	ns := 0
-	for ln[i] != 59 {
-		nameBuf[i] = ln[i]
-		i++
-		ns++
-	}
-
-	i++
-	ts := 0
-	for i < len(ln) && ln[i] != 10 {
-		tempBuf[ts] = ln[i]
-		i++
-		ts++
-	}
-
-	return ns, ts
 }
 
 func atof(bArray []byte) int {
