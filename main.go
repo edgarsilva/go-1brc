@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime"
 	"sync"
 )
 
@@ -17,7 +18,7 @@ type Station struct {
 	Count int
 }
 
-var WorkerPool = 16
+var WorkerPool = runtime.NumCPU()
 
 func main() {
 	// // Start profiling
