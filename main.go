@@ -32,7 +32,6 @@ func main() {
 	// 	log.Fatal("could not create CPU profile: ", err)
 	// }
 
-	var wg sync.WaitGroup
 	doneChan := make(chan bool)
 
 	f, ferr := os.Open("data/data.txt")
@@ -43,16 +42,20 @@ func main() {
 	defer f.Close()
 
 	jobs := make(chan []byte, WorkerPool)
-	results := make(chan map[uint32]*Station, WorkerPool)
+	// results := make(chan map[uint32]*Station, WorkerPool)
 
-	wg.Add(WorkerPool)
-	for w := 0; w < WorkerPool; w++ {
-		go chunkWorker(jobs, results, &wg)
+	// Fan-out
+	chunkWorkerChannels := make([]<-chan map[uint32]*Station, WorkerPool)
+	for i := 0; i < WorkerPool; i++ {
+		chunkWorkerChannels[i] = chunkWorker(jobs)
 	}
+
+	// Fan-in
+	fanInStream := fanIn(doneChan, chunkWorkerChannels...)
 
 	allStations := make([]map[uint32]*Station, 0, 1000)
 	go func() {
-		for result := range results {
+		for result := range fanInStream {
 			allStations = append(allStations, result)
 		}
 
@@ -100,9 +103,6 @@ func main() {
 	}
 	close(jobs)
 
-	wg.Wait()
-	close(results)
-
 	<-doneChan
 	fmt.Println("Chunk count", chunkCount)
 	fmt.Println("All Work Done!")
@@ -116,12 +116,17 @@ func main() {
 	// }
 }
 
-func chunkWorker(jobs <-chan []byte, results chan<- map[uint32]*Station, wg *sync.WaitGroup) {
-	defer wg.Done()
+func chunkWorker(jobs <-chan []byte) <-chan map[uint32]*Station {
+	results := make(chan map[uint32]*Station)
 
-	for chunk := range jobs {
-		results <- workOnChunk(chunk)
-	}
+	go func() {
+		defer close(results)
+		for chunk := range jobs {
+			results <- workOnChunk(chunk)
+		}
+	}()
+
+	return results
 }
 
 func workOnChunk(buf []byte) map[uint32]*Station {
@@ -231,10 +236,30 @@ func atof(bArray []byte) int {
 	return res
 }
 
-func hash(name []byte) uint64 {
-	var h uint64 = 5381
-	for _, b := range name {
-		h = (h << 5) + h + uint64(b)
+func fanIn(done <-chan bool, channels ...<-chan map[uint32]*Station) <-chan map[uint32]*Station {
+	var wg sync.WaitGroup
+	fannedInStream := make(chan map[uint32]*Station)
+
+	transfer := func(c <-chan map[uint32]*Station) {
+		defer wg.Done()
+		for n := range c {
+			select {
+			case fannedInStream <- n:
+			case <-done:
+				return
+			}
+		}
 	}
-	return h
+
+	for _, c := range channels {
+		wg.Add(1)
+		go transfer(c)
+	}
+
+	go func() {
+		wg.Wait()
+		close(fannedInStream)
+	}()
+
+	return fannedInStream
 }
